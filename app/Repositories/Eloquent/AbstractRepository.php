@@ -4,23 +4,37 @@ namespace App\Repositories\Eloquent;
 
 use App\Exceptions\CustomException;
 use App\Repositories\Contracts\AbstractRepositoryInterface;
-use Exception;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
 class AbstractRepository implements AbstractRepositoryInterface
 {
+    /**
+     * Instance that extends Illuminate\Database\Eloquent\Model
+     *
+     * @var Model
+     */
     protected $model;
+
+    /**
+     *  A limit for paginate
+     *
+     * @var $limit
+     */
     protected $limit = 15;
 
+    /**
+     * Constructor
+     */
     public function __construct(Model $model)
     {
         $this->model = $model;
     }
 
     /**
-     * Get Model
+     * Get Model instance
      *
-     * @param Model $model
+     * @return Model
      */
     public function getModel()
     {
@@ -37,9 +51,8 @@ class AbstractRepository implements AbstractRepositoryInterface
         return class_basename($this->model);
     }
 
-
     /**
-     * Retrieve all data of repository
+     * Get all from resource
      *
      * @return Collection
      */
@@ -53,79 +66,184 @@ class AbstractRepository implements AbstractRepositoryInterface
      *
      * @param $id
      * @return Model|null
-     * @throws Exception
+     * @throws CustomException
      */
     public function find(int $id)
     {
-        $response = $this->model->find($id);
-        if (empty($response)) {
-            throw new CustomException($this->getClassName() . ' not found', 404);
-        }
+        $response =  $this->model->find($id);
+        if (empty($response))
+            throw new CustomException($this->getClassName() . '_not_found', 404);
         return $response;
     }
 
     /**
-     * Save a new entity in repository
+     * Find a resource by criteria
      *
-     * @param array $attributes
-     * @return Model
+     * @param array $criteria
+     * @return Model|null
      */
-    public function create(array $data)
-    {
-        return $this->model->create($data);
-    }
-
-    /**
-     * Update a entity in repository by id
-     *
-     * @param array $attributes
-     * @param $id
-     * @return Model
-     */
-    public function update(int $id, array $data)
-    {
-        $model = $this->find($id);
-        $model->fill($data);
-        $model->save();
-        return $model;
-    }
-
-    /**
-     * Delete a entity in repository by id
-     *
-     * @param $id
-     * @return int
-     */
-    public function delete(int $id)
-    {
-        return $this->find($id)->delete();
-    }
-
     public function findOneBy(array $criteria)
     {
         return $this->model->where($criteria)->first();
     }
 
     /**
-     * Retrieve all data of repository, paginated
-     * @param null $limit
-     * @param array $columns
-     * @return Paginator
+     * Search All resources by any values of a key
+     *
+     * @param string $key
+     * @param array $values
+     * @return Collection
      */
-    public function paginate($limit = null, $columns = array('*'))
+    public function findIn(string $key, array $values)
     {
-        $limit = empty(!$limit) ? $limit : $this->limit;
-        return $this->model->paginate($limit, $columns);
+        return $this->model->whereIn($key, $values)->get();
     }
 
     /**
-     * Load relations
+     * Search All resources by criteria
      *
-     * @param array $relations
-     * @return $this
+     * @param array $searchCriteria
+     * @return Collection
      */
-    public function with(array $relations)
+    public function findBy(array $searchCriteria = [])
     {
-        return $this->model->with($relations);
+        //Apply all conditions depends on criteria
+        $queryBuilder = $this->model->where(function ($query) use ($searchCriteria) {
+            $this->applySearchCriteriaInQueryBuilder($query, $searchCriteria);
+        });
+
+        //Order by criteria, eg: order by name desc
+        if (!empty($searchCriteria['order_by']) && !empty($searchCriteria['sorted_by'])) {
+            $queryBuilder->orderBy($searchCriteria['order_by'], $searchCriteria['sorted_by']);
+        }
+
+        //Filter by date range
+        $this->applyFilterByIntervalDates($queryBuilder, $searchCriteria);
+
+        //Set Limit Pagination
+        $limit = !empty($searchCriteria['per_page']) ? (int) $searchCriteria['per_page'] : $this->limit;
+
+        //Return a query with paginate
+        return $queryBuilder->paginate($limit);
+    }
+
+    /**
+     * Apply condition on query builder based on search criteria
+     *
+     * @param Object $query
+     * @param array $data
+     * @param string $field
+     * @return mixed
+     */
+    public function applyFilterByIntervalDates($query, $data, $field = 'created_at')
+    {
+        if (isset($data['date_start'])) {
+            $date_end = isset($data['date_end']) ? $data['date_end'] : date('Y-m-d');
+            $query->where(DB::raw("(DATE_FORMAT($field,'%Y-%m-%d'))"), '>=', $data['date_start']);
+            $query->where(DB::raw("(DATE_FORMAT($field,'%Y-%m-%d'))"), '<=', $date_end);
+        }
+        return $query;
+    }
+
+    /**
+     * Apply condition on query builder based on search criteria
+     *
+     * @param Object $queryBuilder
+     * @param array $searchCriteria
+     * @return mixed
+     */
+    protected function applySearchCriteriaInQueryBuilder($queryBuilder, array $searchCriteria = [])
+    {
+        //Allowed Fields
+        $allowed = ['page', 'per_page', 'order_by', 'sorted_by', 'with', 'where', 'date_start', 'date_end'];
+
+        foreach ($searchCriteria as $key => $value) {
+
+            //skip pagination related query params
+            if (in_array($key, $allowed) || empty($value)) {
+                continue;
+            }
+
+            //we can pass multiple params for a searchCriteria with commas
+            $allValues = explode(',', $value);
+
+            if (count($allValues) > 1) {
+                $queryBuilder->whereIn($key, $allValues);
+            } else {
+                $operator = ($value[0] == '%' || substr($value, -1) == '%') ? 'like' : '=';
+                $join = explode('/', $key);
+                if (isset($join[1])) {
+                    if (isset($searchCriteria['where']) && strtoupper($searchCriteria['where']) == 'AND') {
+                        $queryBuilder->whereHas($join[0], function ($query) use ($join, $operator, $value) {
+                            $query->where($join[1], $operator, $value);
+                        });
+                    } else {
+                        $queryBuilder->orWhereHas($join[0], function ($query) use ($join, $operator, $value) {
+                            $query->where($join[1], $operator, $value);
+                        });
+                    }
+                } else {
+                    if (isset($searchCriteria['where']) && strtoupper($searchCriteria['where']) == 'OR') {
+                        $queryBuilder->orWhere($key, $operator, $value);
+                    } else {
+                        $queryBuilder->where($key, $operator, $value);
+                    }
+                }
+            }
+        }
+
+        return $queryBuilder;
+    }
+
+    /**
+     * Save a resource
+     *
+     * @param array $data
+     * @return Model
+     */
+    public function create(array $data)
+    {
+        $filledProperties = $this->model->getFillable();
+        $keys = array_keys($data);
+        foreach ($keys as $key) {
+            if (!in_array($key, $filledProperties)) {
+                unset($data[$key]);
+            }
+        }
+
+        return $this->model->create($data);
+    }
+
+    /**
+     * Update a resource
+     *
+     * @param integer $id
+     * @param array $data
+     * @return Model
+     */
+    public function update(int $id, array $data)
+    {
+        $model = $this->find($id);
+        $filledProperties = $model->getFillable();
+        $keys = array_keys($data);
+        foreach ($keys as $key) {
+            if (in_array($key, $filledProperties)) {
+                $model->$key = $data[$key];
+            }
+        }
+        $model->save($data);
+        return $model;
+    }
+
+    /**
+     * Delete a resource
+     *
+     * @param integer $id
+     * @return mixed
+     */
+    public function delete(int $id)
+    {
+        $model = $this->find($id);
+        return $model->delete();
     }
 }

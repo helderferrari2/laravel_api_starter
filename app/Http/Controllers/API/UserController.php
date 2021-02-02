@@ -28,7 +28,7 @@ class UserController extends BaseController
      */
     public function index()
     {
-        $response = $this->repository->paginate();
+        $response = $this->repository->all();
         return $this->successResponse($response);
     }
 
@@ -79,5 +79,17 @@ class UserController extends BaseController
     {
         $this->repository->delete($id);
         return $this->successResponse('Successfully');
+    }
+
+    /**
+     * Generic function to search based on criteria
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response
+     */
+    public function search(Request $request)
+    {
+        $response = $this->repository->findBy($request->all());
+        return $this->successResponse($response);
     }
 }

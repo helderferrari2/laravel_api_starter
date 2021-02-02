@@ -15,7 +15,7 @@ use App\Http\Controllers\API\UserController;
 |
 */
 
-
+Route::post('users/search', [UserController::class, 'search']);
 Route::resource('users', UserController::class);
 
 
