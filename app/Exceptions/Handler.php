@@ -2,11 +2,14 @@
 
 namespace App\Exceptions;
 
+use App\Traits\ResponseTrait;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
-use Throwable;
+use App\Exceptions\CustomException;
 
 class Handler extends ExceptionHandler
 {
+    use ResponseTrait;
+
     /**
      * A list of the exception types that are not reported.
      *
@@ -33,8 +36,8 @@ class Handler extends ExceptionHandler
      */
     public function register()
     {
-        $this->reportable(function (Throwable $e) {
-            //
+        $this->renderable(function (CustomException $e, $request) {
+            return $this->errorResponse($e->getMessage(), [], $e->getCode());
         });
     }
 }
